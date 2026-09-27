@@ -1,0 +1,4 @@
+.build/
+firmware/flipper-radio/managed_components/
+firmware/flipper-radio/sdkconfig*
+!firmware/flipper-radio/sdkconfig.defaults

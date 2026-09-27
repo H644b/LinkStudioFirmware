@@ -1,0 +1,67 @@
+name: Build and publish firmware
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: firmware-release
+  cancel-in-progress: false
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      IDF_TOOLS_PATH: ${{ github.workspace }}/.build/esp-tools
+      IDF_COMPONENT_CACHE_PATH: ${{ github.workspace }}/.build/component-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test status indicators
+        run: |
+          mkdir -p .build
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main ci/test-indicator.c firmware/flipper-radio/main/indicator_pattern.c -o .build/test-indicator
+          .build/test-indicator
+      - uses: actions/checkout@v4
+        with:
+          repository: espressif/esp-idf
+          ref: fff9895c82d744c7237be8847347bdd1b07c6643
+          path: .build/esp-idf
+          submodules: recursive
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .build/esp-tools
+            .build/component-cache
+          key: esp32s2-idf-fff9895c82d744c7237be8847347bdd1b07c6643-python312
+      - name: Install toolchain
+        run: .build/esp-idf/install.sh esp32s2
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .build/esp-idf/export.sh
+          tag="fw-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:8}"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          idf.py -C firmware/flipper-radio -B "$GITHUB_WORKSPACE/.build/radio" -D LINK_STUDIO_BUILD_ID="$tag" build
+          python ci/package.py --build .build/radio --output .build/release --version "$tag" --source-commit "$GITHUB_SHA"
+          cp LICENSE .build/release/LICENSE.txt
+          cp THIRD_PARTY.md .build/release/THIRD_PARTY.md
+          cat > .build/release-notes.md <<'EOF'
+          ESP32-S2 firmware for the official Flipper Wi-Fi Developer Board.
+
+          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
+
+          Built and tested in CI from the tagged source with pinned ESP-IDF. This exact image has not been marked as physically verified. The standalone Flipper trading engine remains under development and is not advertised by this USB/MIDI release.
+
+          Full installation uses bootloader 0x1000, partition table 0x8000, OTA metadata 0xd000 and application 0x10000. Application updates use only pokeldn_radio.bin in the inactive OTA slot. See the repository README for setup, LED states and recovery.
+          EOF
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" .build/release/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Link Studio Radio $RELEASE_TAG" --notes-file .build/release-notes.md --draft
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
