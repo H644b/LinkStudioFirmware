@@ -31,6 +31,9 @@
 #include "wifi_callbacks.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#ifdef LS_STANDALONE
+#include "runtime.h"
+#endif
 
 #ifndef LS_BUILD_ID
 #define LS_BUILD_ID "development"
@@ -110,6 +113,15 @@ static wifi_interface_t current_interface(void)
 static void promiscuous_rx(void *buffer, wifi_promiscuous_pkt_type_t type)
 {
     const wifi_promiscuous_pkt_t *packet = buffer;
+#ifdef LS_STANDALONE
+    if (ls_runtime_active()) {
+        const int length = (int)packet->rx_ctrl.sig_len - 4;
+        if (type == WIFI_PKT_DATA && length >= 24 && length <= 1600 &&
+            (packet->payload[1] & 3) == 0 && !memcmp(packet->payload + 16, s_peer, 6))
+            ls_runtime_monitor(packet->payload, length);
+        return;
+    }
+#endif
     if (atomic_load(&s_mode) == MODE_SNIFF) {
         /* Sniff: every management or data frame to or from one MAC, whole, without FCS. */
         const int length = (int)packet->rx_ctrl.sig_len - 4;
@@ -176,6 +188,10 @@ static void start_sniffer(void)
 static esp_err_t ethernet_rx(void *buffer, uint16_t length, void *eb)
 {
     atomic_fetch_add(&s_rx_eth, 1);
+#ifdef LS_STANDALONE
+    if (ls_runtime_active()) ls_runtime_ethernet(buffer, length);
+    else
+#endif
     wire_send(MSG_RX_ETH, buffer, length, NULL, 0);
     esp_wifi_internal_free_rx_buffer(eb);
     return ESP_OK;
@@ -448,6 +464,9 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (id == WIFI_EVENT_AP_STADISCONNECTED) {
         indicator_base(LED_SEARCHING);
         const wifi_event_ap_stadisconnected_t *event = data;
+#ifdef LS_STANDALONE
+        if (ls_runtime_active()) ls_runtime_peer_left(event->mac);
+#endif
         uint8_t head[8];
         memcpy(head, event->mac, 6);
         memcpy(head + 6, &event->reason, 2);
@@ -459,7 +478,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 static void send_status(void)
 {
-    char text[768];
+    char text[1024];
     int len = snprintf(text, sizeof(text),
         "ready=%d mode=%d rx_mgmt=%u rx_eth=%u tx_eth=%u tx_eth_failed=%u tx_raw=%u tx_raw_failed=%u "
         "wire_dropped=%u heap=%u tx_acked=%u tx_unacked=%u tx_eth_retried=%u tx_eth_last_err=%#x "
@@ -479,6 +498,13 @@ static void send_status(void)
         const int more = wire_stats(text + len, sizeof(text) - len);
         if (more > 0) len += more;
     }
+#ifdef LS_STANDALONE
+    if (len < (int)sizeof(text) - 1) {
+        text[len++] = ' ';
+        const int more = ls_runtime_stats(text + len, sizeof(text) - len);
+        if (more > 0) len += more;
+    }
+#endif
     if (len >= (int)sizeof(text)) len = sizeof(text) - 1;
     wire_send(MSG_STATUS, text, len, NULL, 0);
 }
@@ -520,7 +546,14 @@ static void send_info(void)
         "uart-v1 "
 #endif
         "idf=" IDF_VER;
+#ifdef LS_STANDALONE
+    char capabilities[320];
+    snprintf(capabilities, sizeof(capabilities), "%s%s", text,
+             ls_runtime_ready() ? " standalone-v1" : "");
+    wire_send(MSG_INFO, head, sizeof(head), capabilities, strlen(capabilities));
+#else
     wire_send(MSG_INFO, head, sizeof(head), text, strlen(text));
+#endif
 }
 
 static void command(uint8_t type, const uint8_t *p, size_t n)
@@ -536,6 +569,18 @@ static void command(uint8_t type, const uint8_t *p, size_t n)
     if (wifi_update_busy() && type != CMD_HELLO && type != CMD_STATUS) {
         result(type, ESP_ERR_INVALID_STATE); return;
     }
+#ifdef LS_STANDALONE
+    if (type >= 0x30 && type <= 0x3a) {
+        if (!atomic_load(&s_wifi_ready) || maintenance_busy()) result(type, ESP_ERR_INVALID_STATE);
+        else ls_runtime_command(type, p, n, atomic_load(&s_mode) == MODE_IDLE);
+        return;
+    }
+    /* A pending GPIO START reserves the radio before the worker changes mode.
+       Legacy STOP, restart, raw TX and maintenance must never cut a save short. */
+    if (ls_runtime_active() && type != CMD_HELLO && type != CMD_STATUS) {
+        result(type, ESP_ERR_INVALID_STATE); return;
+    }
+#endif
     if (maintenance_command(type, p, n, atomic_load(&s_mode) == MODE_IDLE)) return;
     if (maintenance_busy() && type != CMD_STOP && type != CMD_STATUS) {
         result(type, ESP_ERR_INVALID_STATE); return;
@@ -679,6 +724,26 @@ static void startup_check(esp_err_t result, const char *stage)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+#ifdef LS_STANDALONE
+static bool standalone_ethernet(const uint8_t* data, size_t size)
+{
+    if (atomic_load(&s_mode) != MODE_AP || size < 14 || size > 1600) return false;
+    int r = esp_wifi_internal_tx(WIFI_IF_AP, (void*)data, size);
+    for (unsigned retry = 0; r == ESP_ERR_NO_MEM && retry < 20; ++retry) {
+        vTaskDelay(1);
+        r = esp_wifi_internal_tx(WIFI_IF_AP, (void*)data, size);
+    }
+    atomic_fetch_add(r == ESP_OK ? &s_tx_eth : &s_tx_eth_failed, 1);
+    return r == ESP_OK;
+}
+static bool standalone_raw(const uint8_t* data, size_t size)
+{
+    if (atomic_load(&s_mode) != MODE_AP || size < 24 || size > 1500) return false;
+    int r = esp_wifi_80211_tx(WIFI_IF_AP, data, size, true);
+    atomic_fetch_add(r == ESP_OK ? &s_tx_raw : &s_tx_raw_failed, 1);
+    return r == ESP_OK;
+}
+#endif
 
 void app_main(void)
 {
@@ -705,6 +770,11 @@ void app_main(void)
     startup_check(esp_wifi_start(), "wifi start");
     esp_wifi_set_ps(WIFI_PS_NONE);
     start_sniffer();
+#ifdef LS_STANDALONE
+    const LsRadio local = {.start = ap_start, .stop = go_idle,
+                           .ethernet = standalone_ethernet, .raw = standalone_raw};
+    if (!ls_runtime_init(&local)) wire_log("standalone runtime unavailable: insufficient memory");
+#endif
     atomic_store(&s_wifi_ready, true);
     indicator_base(LED_IDLE);
     /* A newly selected OTA slot must reach USB + Wi-Fi startup before it becomes permanent. */

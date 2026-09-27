@@ -1,5 +1,5 @@
 #include "ls_reliable.h"
-#include <stdlib.h>
+#include "ls_alloc.h"
 #include <string.h>
 
 typedef struct {
@@ -22,7 +22,7 @@ static bool before(uint16_t a, uint16_t b) {
     return d && d < 0x8000;
 }
 LsReliable* ls_reliable_alloc(uint16_t start) {
-    LsReliable* link = calloc(1, sizeof(*link));
+    LsReliable* link = ls_calloc(1, sizeof(*link));
     if (link)
         link->next = link->low = link->recv_next = start;
     return link;
@@ -40,7 +40,7 @@ bool ls_reliable_queue(LsReliable* link, const uint8_t* data, size_t size, uint8
         (uint16_t)(link->next - link->low) >= LS_RELIABLE_WINDOW ||
         size > LS_RELIABLE_BYTES_MAX - link->bytes)
         return false;
-    uint8_t* copy = malloc(size ? size : 1);
+    uint8_t* copy = ls_alloc(size ? size : 1);
     if (!copy)
         return false;
     if (size)
@@ -52,12 +52,8 @@ bool ls_reliable_queue(LsReliable* link, const uint8_t* data, size_t size, uint8
     link->bytes += size;
     return true;
 }
-uint16_t ls_reliable_next(const LsReliable* link) {
-    return link->next;
-}
-uint16_t ls_reliable_low(const LsReliable* link) {
-    return link->low;
-}
+uint16_t ls_reliable_next(const LsReliable* link) { return link->next; }
+uint16_t ls_reliable_low(const LsReliable* link) { return link->low; }
 size_t ls_reliable_outstanding(const LsReliable* link) {
     size_t n = 0;
     for (uint16_t seq = link->low; seq != link->next; ++seq)

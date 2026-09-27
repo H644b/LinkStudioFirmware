@@ -12,3 +12,7 @@ bool ls_crypto_gcm_encrypt(const uint8_t key[16], const uint8_t nonce[12], const
                            size_t size, uint8_t* out, uint8_t tag[8]);
 bool ls_crypto_gcm_decrypt(const uint8_t key[16], const uint8_t nonce[12], const uint8_t* in,
                            size_t size, const uint8_t tag[8], uint8_t* out);
+/* IEEE 802.11 CCMP: 13-byte nonce, authenticated MAC header, eight-byte MIC. */
+bool ls_crypto_ccm_decrypt(const uint8_t key[16], const uint8_t nonce[13], const uint8_t* aad,
+                           size_t aad_size, const uint8_t* in, size_t size, const uint8_t tag[8],
+                           uint8_t* out);

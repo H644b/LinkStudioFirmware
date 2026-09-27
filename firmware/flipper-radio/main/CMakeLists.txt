@@ -9,13 +9,22 @@ if(LINK_STUDIO_GPIO)
     endif()
     set(ls_zstd "${LINK_STUDIO_ZSTD}/lib")
     list(APPEND radio_sources "../standalone/ls_ldn.c" "../standalone/ls_crypto_esp.c"
-        "../standalone/ls_reliable.c" "../standalone/ls_pia.c" "../standalone/ls_connect.c"
-        "${ls_common}/ls_wire.c"
+        "../standalone/ls_reliable.c" "../standalone/ls_stream.c" "../standalone/ls_session.c"
+        "../standalone/ls_pia.c" "../standalone/ls_connect.c" "../standalone/ls_ip.c"
+        "../standalone/ls_wifi_frame.c" "../standalone/ls_host.c"
+        "${ls_common}/ls_wire.c" "${ls_common}/ls_game.c" "${ls_common}/ls_pa9.c"
+        "${ls_common}/ls_recipe.c"
         "${ls_zstd}/common/debug.c" "${ls_zstd}/common/entropy_common.c"
         "${ls_zstd}/common/error_private.c" "${ls_zstd}/common/fse_decompress.c"
         "${ls_zstd}/common/xxhash.c" "${ls_zstd}/common/zstd_common.c"
         "${ls_zstd}/decompress/huf_decompress.c" "${ls_zstd}/decompress/zstd_ddict.c"
         "${ls_zstd}/decompress/zstd_decompress.c" "${ls_zstd}/decompress/zstd_decompress_block.c")
+endif()
+if(LINK_STUDIO_GPIO AND LINK_STUDIO_PROFILES_DIR)
+    if(NOT EXISTS "${LINK_STUDIO_PROFILES_DIR}/ls_host_profiles.h")
+        message(FATAL_ERROR "Prepare the bounded public Z-A host profiles before enabling runtime")
+    endif()
+    list(APPEND radio_sources "../standalone/runtime.c")
 endif()
 idf_component_register(SRCS ${radio_sources} INCLUDE_DIRS "." "../standalone"
     PRIV_REQUIRES ${radio_private})
@@ -29,4 +38,8 @@ endif()
 if(LINK_STUDIO_GPIO)
     target_include_directories(${COMPONENT_LIB} PRIVATE "${ls_common}" "${ls_zstd}")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE ZSTD_DISABLE_ASM ZSTD_LEGACY_SUPPORT=0)
+endif()
+if(LINK_STUDIO_GPIO AND LINK_STUDIO_PROFILES_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${LINK_STUDIO_PROFILES_DIR}")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LS_STANDALONE=1)
 endif()

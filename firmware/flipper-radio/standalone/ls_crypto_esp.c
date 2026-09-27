@@ -105,3 +105,27 @@ bool ls_crypto_gcm_decrypt(const uint8_t key[16], const uint8_t nonce[12], const
     free(combined);
     return ok;
 }
+bool ls_crypto_ccm_decrypt(const uint8_t key[16], const uint8_t nonce[13], const uint8_t* aad,
+                           size_t aad_size, const uint8_t* in, size_t size, const uint8_t tag[8],
+                           uint8_t* out) {
+    if (size > 1508 || aad_size > 24)
+        return false;
+    uint8_t* combined = malloc(size + 8);
+    if (!combined)
+        return false;
+    memcpy(combined, in, size);
+    memcpy(combined + size, tag, 8);
+    mbedtls_svc_key_id_t id = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_algorithm_t algorithm = PSA_ALG_AEAD_WITH_SHORTENED_TAG(PSA_ALG_CCM, 8);
+    psa_status_t result = import_aes(key, algorithm, PSA_KEY_USAGE_DECRYPT, &id);
+    size_t count = 0;
+    if (result == PSA_SUCCESS)
+        result = psa_aead_decrypt(id, algorithm, nonce, 13, aad, aad_size, combined, size + 8, out,
+                                  size, &count);
+    bool ok = result == PSA_SUCCESS && count == size;
+    if (!ok)
+        memset(out, 0, size);
+    psa_destroy_key(id);
+    free(combined);
+    return ok;
+}

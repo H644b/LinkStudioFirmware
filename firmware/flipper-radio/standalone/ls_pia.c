@@ -2,7 +2,7 @@
 #include "ls_crypto.h"
 #include "ls_wire.h"
 #define ZSTD_STATIC_LINKING_ONLY
-#include <stdlib.h>
+#include "ls_alloc.h"
 #include <string.h>
 #include <zstd.h>
 
@@ -15,9 +15,7 @@ struct LsPia {
     uint8_t raw[LS_PIA_DATAGRAM_MAX], plain[LS_PIA_PLAIN_MAX];
     LsPiaFrame frame;
 };
-static uint16_t read16(const uint8_t* p) {
-    return (uint16_t)p[0] << 8 | p[1];
-}
+static uint16_t read16(const uint8_t* p) { return (uint16_t)p[0] << 8 | p[1]; }
 static void be16(uint8_t* p, uint16_t n) {
     p[0] = n >> 8;
     p[1] = n;
@@ -33,7 +31,7 @@ static void be64(uint8_t* p, uint64_t n) {
 LsPia* ls_pia_alloc(const uint8_t ssid[16], uint64_t first_nonce) {
     if (!ssid)
         return NULL;
-    LsPia* pia = calloc(1, sizeof(*pia));
+    LsPia* pia = ls_calloc(1, sizeof(*pia));
     if (!pia)
         return NULL;
     static const uint8_t game_key[16] = {'p', '3', 'b', 'w', 'd', 'a', 'S', 's',
@@ -58,9 +56,7 @@ void ls_pia_free(LsPia* pia) {
         free(pia);
     }
 }
-uint32_t ls_pia_network_id(const LsPia* pia) {
-    return pia->network_id;
-}
+uint32_t ls_pia_network_id(const LsPia* pia) { return pia->network_id; }
 static bool parse_messages(LsPia* pia, const uint8_t* p, size_t size) {
     size_t at = 0, message_size = 0, count = 0;
     uint8_t flags = 0, protocol = 0;

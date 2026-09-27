@@ -29,6 +29,7 @@ jobs:
           .build/test-wifi-profiles
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main ci/test-wifi-callbacks.c firmware/flipper-radio/main/wifi_callbacks.c -o .build/test-wifi-callbacks
           .build/test-wifi-callbacks
+          python ci/test-build-assets.py
       - uses: actions/checkout@v4
         with:
           repository: espressif/esp-idf
@@ -45,24 +46,29 @@ jobs:
         run: .build/esp-idf/install.sh esp32s2
       - name: Build and package
         shell: bash
+        env:
+          LS_HOST_PROFILES_GZIP_B64: ${{ secrets.LS_HOST_PROFILES_GZIP_B64 }}
         run: |
           set -euo pipefail
           source .build/esp-idf/export.sh
           tag="fw-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:8}"
           echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
-          idf.py -C firmware/flipper-radio -B "$GITHUB_WORKSPACE/.build/radio" -D LINK_STUDIO_BUILD_ID="$tag" build
+          python ci/prepare-zstd.py
+          python ci/prepare-host-profile.py --output .build/profiles/ls_host_profiles.h
+          idf.py -C firmware/flipper-radio -B "$GITHUB_WORKSPACE/.build/radio" -D LINK_STUDIO_BUILD_ID="$tag" -D LINK_STUDIO_GPIO=ON -D LINK_STUDIO_ZSTD="$GITHUB_WORKSPACE/.build/zstd-1.5.7" -D LINK_STUDIO_PROFILES_DIR="$GITHUB_WORKSPACE/.build/profiles" build
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main -I firmware/flipper-radio/managed_components/espressif__cjson/cJSON ci/test-update-contract.c firmware/flipper-radio/main/update_contract.c firmware/flipper-radio/managed_components/espressif__cjson/cJSON/cJSON.c -lm -o .build/test-update-contract
           .build/test-update-contract
-          python ci/package.py --build .build/radio --output .build/release --version "$tag" --source-commit "$GITHUB_SHA"
+          python ci/package.py --build .build/radio --output .build/release --version "$tag" --source-commit "$GITHUB_SHA" --standalone
           cp firmware/flipper-radio/managed_components/espressif__cjson/cJSON/LICENSE .build/release/cJSON-LICENSE.txt
+          cp .build/zstd-1.5.7/LICENSE .build/release/Zstandard-LICENSE.txt
           cp LICENSE .build/release/LICENSE.txt
           cp THIRD_PARTY.md .build/release/THIRD_PARTY.md
           cat > .build/release-notes.md <<'EOF'
           ESP32-S2 firmware for the official Flipper Wi-Fi Developer Board.
 
-          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery, GPIO UART, nearby Wi-Fi scanning, up to eight saved networks on the board, home Wi-Fi updates initiated by the Flipper and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
+          Includes desktop/browser USB CDC, iPhone USB MIDI, the standalone GPIO trading runtime, application-slot updates, software recovery, nearby Wi-Fi scanning, up to eight saved networks on the board, home Wi-Fi updates initiated by the Flipper and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
 
-          Built and tested in CI from the tagged source with pinned ESP-IDF. This exact image has not been marked as physically verified. The standalone Flipper trading engine remains under development and is not advertised by this USB/MIDI release.
+          Built and tested in CI from the tagged source with pinned ESP-IDF and checksum-verified Zstandard. Bounded game-specific connection identities are compiled into the runtime; no console root-key file is needed. This exact CI image has not been marked as physically verified. Consult the source documentation for hardware verification status and limitations.
 
           Full installation uses bootloader 0x1000, partition table 0x8000, OTA metadata 0xd000 and application 0x10000. Application updates use only pokeldn_radio.bin in the inactive OTA slot. See the repository README for setup, LED states and recovery.
           EOF

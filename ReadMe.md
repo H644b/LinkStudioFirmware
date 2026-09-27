@@ -12,8 +12,14 @@ The official **Flipper Wi-Fi Developer Board V1**, ESP32-S2-WROVER, 4 MB flash.
 The release supports desktop/browser CDC, direct iPhone USB MIDI, and GPIO UART
 for the Flipper app.
 It is not Flipper Zero system firmware and does not target ESP32-C3/S3 boards.
-The independent Flipper GPIO trading engine is still under development; no stable
-release claims standalone trading support yet.
+The integrated GPIO engine uses the Flipper for controls and runs networking on the
+board. A build advertises `standalone-v1` only after its worker starts successfully.
+Hardware verification is recorded separately from the CI image manifest.
+On 2026-09-27, a local build of this runtime completed two consecutive real Switch
+trades through GPIO, including cancel/reoffer and normal Stop. The user confirmed
+both Pokémon persisted after reopening Z-A. Stop during saving and controller loss
+have offline coverage; they were not physically verified in that session.
+See the [Flipper setup and verification notes](https://github.com/H644b/Pokemon-Spoofer/tree/main/flipper).
 
 ## Status LED
 
@@ -34,8 +40,9 @@ The onboard RGB LED is active low: red GPIO6, green GPIO5, blue GPIO4, per the
 | Red triple blink | Error |
 | Steady white | Restart requested |
 
-The host supplies trade-phase hints once per second on firmware command `0x17`.
+Desktop and iPhone hosts supply trade-phase hints once per second on firmware command `0x17`.
 Hints expire after three seconds, reverting to the board's actual radio state.
+The standalone GPIO worker drives those states directly.
 Maintenance and errors take priority. ROM bootloader flashing cannot use these
 patterns because Link Studio firmware is not running then. A completed-trade LED
 does not independently prove persistence after restarting the game.
@@ -65,25 +72,37 @@ firmware write. Wi-Fi is disconnected and the normal radio mode restored on fail
 
 The Flipper updater requires `uart-v1` and `wifi-update-v1`; scanning and saved networks
 also require `wifi-profiles-v1`. Older boards show a one-time manual network entry
-option to download an upgrade. Installing a
-new release does not enable the unfinished standalone trading engine.
+option to download an upgrade. GPIO trading additionally requires `standalone-v1`
+and a prepared Pokémon recipe on the Flipper's SD card.
 
 ## Build and release
 
 Every push to `main` runs `.github/workflows/release.yml`. The workflow tests the
 LED patterns, saved profile handling, network message parsing, action guards and the
 release-validation contract, installs pinned ESP-IDF commit
-`fff9895c82d744c7237be8847347bdd1b07c6643`, compiles the ESP32-S2 firmware and uploads
+`fff9895c82d744c7237be8847347bdd1b07c6643` and checksum-verified Zstandard 1.5.7,
+compiles the ESP32-S2 firmware and uploads
 all assets to a draft release. Only after every upload succeeds does it publish
 the release as latest. The workflow can also be run manually in Actions.
 
 For a local build, install that ESP-IDF revision and ESP32-S2 tools, source
-`export.sh`, then run:
+`export.sh`, then prepare the same bounded Z-A connection-profile asset used by
+the Link Studio web/iPhone build. This is not a console root-key file. CI receives
+its gzip/base64 form through the repository Actions secret
+`LS_HOST_PROFILES_GZIP_B64`; missing or malformed data fails the build rather than
+silently releasing firmware without standalone support. Profile contents are not
+logged or copied into source control. For a local JSON asset at
+`.build/browser-host-profile.json`, run:
 
 ```sh
-idf.py -C firmware/flipper-radio -B "$PWD/.build/radio" build
+python ci/prepare-zstd.py
+python ci/prepare-host-profile.py --input .build/browser-host-profile.json \
+  --output .build/profiles/ls_host_profiles.h
+idf.py -C firmware/flipper-radio -B "$PWD/.build/radio" \
+  -D LINK_STUDIO_GPIO=ON -D LINK_STUDIO_ZSTD="$PWD/.build/zstd-1.5.7" \
+  -D LINK_STUDIO_PROFILES_DIR="$PWD/.build/profiles" build
 python ci/package.py --build .build/radio --output .build/release \
-  --version local-test --source-commit "$(git rev-parse HEAD)"
+  --version local-test --source-commit "$(git rev-parse HEAD)" --standalone
 ```
 
 `firmware.bundle.json` contains the manifest and base64-encoded images in one

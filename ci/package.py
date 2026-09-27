@@ -3,7 +3,7 @@
 from pathlib import Path
 import argparse, base64, hashlib, json, re, shutil
 
-def package(build, output, version, source_commit):
+def package(build, output, version, source_commit, standalone=False):
     if not re.fullmatch(r'[A-Za-z0-9._-]{1,80}',version):
         raise ValueError('Invalid build version')
     output.mkdir(parents=True,exist_ok=True)
@@ -22,10 +22,14 @@ def package(build, output, version, source_commit):
         end=images[i+1]['address'] if i+1<len(images) else 0x1f0000
         if image['address']+image['bytes']>end:
             raise ValueError('Image exceeds partition boundary')
+    if standalone and b'standalone-v1' not in (build/'pokeldn_radio.bin').read_bytes():
+        raise ValueError('Cannot advertise standalone support without the compiled runtime')
+    capabilities=['usbpace-v1','midi-v1','bootcmd-v1','ota-v1','led-v1','uart-v1','wifi-update-v1','wifi-profiles-v1']
+    if standalone:capabilities.append('standalone-v1')
     manifest=dict(schema_version=1,repository='H644b/LinkStudioFirmware',version=version,
         target='esp32s2',board='Flipper Wi-Fi Developer Board',variant='usb-midi',layout='ota-v1',
         flash_bytes=0x400000,idf_commit='fff9895c82d744c7237be8847347bdd1b07c6643',
-        source_commit=source_commit,capabilities=['usbpace-v1','midi-v1','bootcmd-v1','ota-v1','led-v1','uart-v1','wifi-update-v1','wifi-profiles-v1'],
+        source_commit=source_commit,capabilities=capabilities,
         source_hardware_verified=False,images=images)
     (output/'firmware.json').write_text(json.dumps(manifest,indent=2)+'\n')
     # One immutable asset avoids mismatched manifests/images and keeps browser
@@ -38,5 +42,5 @@ def package(build, output, version, source_commit):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--version',required=True)
-    p.add_argument('--source-commit',required=True);a=p.parse_args()
-    package(a.build,a.output,a.version,a.source_commit)
+    p.add_argument('--source-commit',required=True);p.add_argument('--standalone',action='store_true');a=p.parse_args()
+    package(a.build,a.output,a.version,a.source_commit,a.standalone)
