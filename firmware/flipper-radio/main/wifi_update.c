@@ -392,7 +392,7 @@ static void updater(void *arg) {
     wifi_update_status();
     erase(job, sizeof(*job)); free(job);
     vTaskDelay(pdMS_TO_TICKS(1500));
-    esp_restart();
+    wire_restart_application();
 done:
     wire_log("wifi update finish error=%s stage=%s", esp_err_to_name(r), failure);
     if (ota_open) esp_ota_abort(ota);

@@ -59,6 +59,14 @@ static atomic_uint s_transport;
 void wire_release_transport(void) { atomic_store(&s_transport, LINK_NONE); }
 bool wire_is_gpio(void) { return atomic_load(&s_transport) == LINK_GPIO; }
 
+void wire_restart_application(void)
+{
+    /* Drop the USB pull-up before restarting so CDC/MIDI hosts discard stale endpoints. */
+    tud_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+}
+
 bool wire_reset(uint8_t command, bool bootloader)
 {
     message_t *m = malloc(sizeof(*m) + 6);
@@ -319,7 +327,7 @@ static void writer(void *arg)
                 REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
                 esp_rom_software_reset_system();
             }
-            esp_restart();
+            wire_restart_application();
         }
     }
 }

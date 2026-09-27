@@ -14,6 +14,8 @@ typedef void (*wire_handler_t)(uint8_t type, const uint8_t *payload, size_t leng
 void wire_start(wire_handler_t handler);
 /* Queue reset behind its RESULT acknowledgement. ROM recovery has no MIDI interface. */
 bool wire_reset(uint8_t command, bool bootloader);
+/* Used by the autonomous Wi-Fi updater after its final status has drained. */
+void wire_restart_application(void);
 void wire_release_transport(void);
 bool wire_is_gpio(void);
 /* Queues one message; safe from any task and from Wi-Fi callbacks. Drops (and counts) when the
