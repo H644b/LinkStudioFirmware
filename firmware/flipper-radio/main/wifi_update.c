@@ -261,6 +261,7 @@ static esp_err_t download(const char *url, const UpdateAsset *asset, char *json,
         if (r != ESP_OK) break;
         int64_t length = esp_http_client_fetch_headers(client);
         int code = esp_http_client_get_status_code(client);
+        wire_log("wifi HTTPS response code=%d length=%" PRId64, code, length);
         if (length < 0 || headers->invalid_location) { r = ESP_FAIL; break; }
         if (code == 200) {
             if (length > (int64_t)capacity || (asset && length > 0 && length != (int64_t)asset->size)) r = ESP_ERR_INVALID_SIZE;
@@ -298,6 +299,17 @@ static esp_err_t download(const char *url, const UpdateAsset *asset, char *json,
             bytes != 32 || memcmp(digest, asset->sha256, 32)) r = ESP_ERR_INVALID_CRC;
     }
     psa_hash_abort(&hash);
+    if (r != ESP_OK && client) {
+        int tls_code = 0, tls_flags = 0;
+        esp_err_t tls = esp_http_client_get_and_clear_last_tls_error(client, &tls_code, &tls_flags);
+        wire_log("wifi HTTPS error=%s errno=%d tls=%s code=%d flags=%d",
+                 esp_err_to_name(r), esp_http_client_get_errno(client),
+                 esp_err_to_name(tls), tls_code, tls_flags);
+        wire_log("wifi HTTPS memory internal=%u largest=%u external=%u received=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)total);
+    }
     if (client) esp_http_client_cleanup(client);
     free(headers); free(block);
     *received = total;

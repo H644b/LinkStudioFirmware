@@ -6,6 +6,8 @@
    association without the 4-way handshake and installs the same key for it.
    docs/hardware_esp32.md has the message set. */
 #include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_chip_info.h"
@@ -28,12 +30,24 @@
 #include "wifi_update.h"
 #include "wifi_callbacks.h"
 #include "esp_netif.h"
+#include "esp_log.h"
 
 #ifndef LS_BUILD_ID
 #define LS_BUILD_ID "development"
 #endif
 
 #define PROTOCOL_VERSION 1
+
+/* Keep SDK diagnostics in framed messages. Only TLS error tags are forwarded;
+ * station configuration and credentials never belong in the host log. */
+static int sdk_tls_log(const char *format, va_list args)
+{
+    char line[256];
+    int count = vsnprintf(line, sizeof(line), format, args);
+    if (strstr(line, "esp-x509-crt-bundle:") || strstr(line, "esp-tls-mbedtls:"))
+        wire_log("%s", line);
+    return count;
+}
 
 enum {
     CMD_HELLO = 0x01, CMD_BAUD = 0x02, CMD_CHANNEL = 0x03, CMD_STA_JOIN = 0x04, CMD_STOP = 0x05,
@@ -670,6 +684,7 @@ void app_main(void)
 {
     const bool led_ready = indicator_init();
     wire_start(command);
+    esp_log_set_vprintf(sdk_tls_log);
     if (!led_ready) wire_log("status LED unavailable; radio remains usable");
     wire_log("startup USB ready; reset=%u heap=%u", (unsigned)esp_reset_reason(), (unsigned)esp_get_free_heap_size());
     esp_err_t r = nvs_flash_init();
