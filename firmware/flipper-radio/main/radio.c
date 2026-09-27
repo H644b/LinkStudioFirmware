@@ -25,6 +25,8 @@
 #include "wire.h"
 #include "maintenance.h"
 #include "indicator.h"
+#include "wifi_update.h"
+#include "esp_netif.h"
 
 #ifndef LS_BUILD_ID
 #define LS_BUILD_ID "development"
@@ -36,7 +38,7 @@ enum {
     CMD_HELLO = 0x01, CMD_BAUD = 0x02, CMD_CHANNEL = 0x03, CMD_STA_JOIN = 0x04, CMD_STOP = 0x05,
     CMD_AP_START = 0x06, CMD_AP_KICK = 0x07, CMD_ETH_TX = 0x08, CMD_RAW_TX = 0x09,
     CMD_SNIFF = 0x0A, CMD_STATUS = 0x0B, CMD_BENCH = 0x0C, CMD_TX_PACING = 0x0D,
-    CMD_BOOTLOADER = 0x0E, CMD_RELEASE = 0x0F, CMD_LED_STATE = 0x17,
+    CMD_BOOTLOADER = 0x0E, CMD_RELEASE = 0x0F, CMD_LED_STATE = 0x17, CMD_WIFI_UPDATE = 0x18, CMD_WIFI_STATUS = 0x19,
 };
 enum {
     MSG_INFO = 0x81, MSG_RESULT = 0x82, MSG_RX_MGMT = 0x84, MSG_RX_ETH = 0x85, MSG_LINK = 0x86,
@@ -44,7 +46,7 @@ enum {
     MSG_RX_SNIFF = 0x8C,
 };
 enum { AP_FLAG_STOCK_JOIN = 1, AP_FLAG_NO_QOS = 2, AP_FLAG_NO_DATA_TRACE = 4 };
-enum mode { MODE_IDLE, MODE_STA_JOINING, MODE_STA, MODE_AP, MODE_SNIFF };
+enum mode { MODE_IDLE, MODE_STA_JOINING, MODE_STA, MODE_AP, MODE_SNIFF, MODE_UPDATING };
 
 static const uint8_t BROADCAST[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 static const uint8_t LDN_ACTION[4] = {0x7f, 0x00, 0x22, 0xaa};
@@ -70,6 +72,7 @@ static atomic_uint s_tx_eth_max_us, s_tx_eth_total_us, s_tx_eth_slow;
 static QueueHandle_t s_ap_joins;   /* station MACs whose association response went out */
 static int s_ap_pairwise;
 static int (*s_stock_sta_connect)(uint8_t *bssid);
+static struct wpa_funcs *s_stock_wpa, *s_ldn_wpa;
 static bool (*s_stock_ap_join)(priv_join_param_t *join);
 
 static void result(uint8_t command, int32_t code)
@@ -213,6 +216,8 @@ static void install_hooks(void)
 {
     struct wpa_funcs *table = malloc(sizeof(*table));
     ESP_ERROR_CHECK(table ? ESP_OK : ESP_ERR_NO_MEM);
+    s_stock_wpa = wpa_cb;
+    s_ldn_wpa = table;
     memcpy(table, wpa_cb, sizeof(*table));
     s_stock_sta_connect = table->wpa_sta_connect;
     s_stock_ap_join = table->wpa_ap_join;
@@ -241,6 +246,30 @@ static void go_idle(void)
     esp_wifi_start();
     esp_wifi_set_ps(WIFI_PS_NONE);
     start_sniffer();
+}
+
+/* Switch the shared Wi-Fi driver back to its normal WPA supplicant for HTTPS. */
+static esp_err_t prepare_home_wifi(void)
+{
+    atomic_store(&s_mode, MODE_UPDATING);
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    esp_wifi_internal_reg_rxcb(WIFI_IF_STA, NULL);
+    esp_wifi_internal_reg_rxcb(WIFI_IF_AP, NULL);
+    esp_err_t r = esp_wifi_register_wpa_cb_internal(s_stock_wpa);
+    if (r == ESP_OK) wpa_cb = s_stock_wpa;
+    if (r == ESP_OK) r = esp_wifi_set_mode(WIFI_MODE_STA);
+    uint8_t mac[6];
+    if (r == ESP_OK) r = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (r == ESP_OK) r = esp_wifi_set_mac(WIFI_IF_STA, mac);
+    return r;
+}
+static void restore_ldn_wifi(void)
+{
+    esp_wifi_register_wpa_cb_internal(s_ldn_wpa);
+    wpa_cb = s_ldn_wpa;
+    go_idle();
 }
 
 static esp_err_t sta_join(const uint8_t *p, size_t n)
@@ -275,6 +304,7 @@ static esp_err_t sta_join(const uint8_t *p, size_t n)
     atomic_store(&s_assoc_seen, false);
     s_join_started = esp_timer_get_time();
     atomic_store(&s_mode, MODE_STA_JOINING);
+    indicator_base(LED_SEARCHING);
     r = esp_wifi_connect();
     if (r != ESP_OK) atomic_store(&s_mode, MODE_IDLE);
     return r;
@@ -365,6 +395,7 @@ static void ap_open_station(const uint8_t *mac)
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    if (atomic_load(&s_mode) == MODE_UPDATING) return;
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = data;
         const enum mode mode = atomic_load(&s_mode);
@@ -458,7 +489,7 @@ static void send_info(void)
     if (esp_wifi_get_mac(WIFI_IF_STA, head + 1) != ESP_OK) esp_read_mac(head + 1, ESP_MAC_WIFI_STA);
     esp_read_mac(head + 7, ESP_MAC_WIFI_SOFTAP);
     head[13] = (uint8_t)(chip.revision / 100);
-    const char *text = "pokeldn-radio " CONFIG_IDF_TARGET " tinyusb usbpace-v1 midi-v1 bootcmd-v1 ota-v1 led-v1 build=" LS_BUILD_ID " "
+    const char *text = "pokeldn-radio " CONFIG_IDF_TARGET " tinyusb usbpace-v1 midi-v1 bootcmd-v1 ota-v1 led-v1 wifi-update-v1 build=" LS_BUILD_ID " "
 #ifdef LS_GPIO
         "uart-v1 "
 #endif
@@ -468,6 +499,13 @@ static void send_info(void)
 
 static void command(uint8_t type, const uint8_t *p, size_t n)
 {
+    if (type == CMD_WIFI_STATUS) {
+        if (n) result(type, ESP_ERR_INVALID_SIZE); else wifi_update_status();
+        return;
+    }
+    if (wifi_update_busy() && type != CMD_HELLO && type != CMD_STATUS) {
+        result(type, ESP_ERR_INVALID_STATE); return;
+    }
     if (maintenance_command(type, p, n, atomic_load(&s_mode) == MODE_IDLE)) return;
     if (maintenance_busy() && type != CMD_STOP && type != CMD_STATUS) {
         result(type, ESP_ERR_INVALID_STATE); return;
@@ -489,6 +527,10 @@ static void command(uint8_t type, const uint8_t *p, size_t n)
     case CMD_LED_STATE:
         if (n != 1 || p[0] < LED_IDLE || p[0] > LED_COMPLETE) { result(type, ESP_ERR_INVALID_ARG); break; }
         indicator_host((LedState)p[0]); result(type, ESP_OK); break;
+    case CMD_WIFI_UPDATE:
+        if (atomic_load(&s_mode) != MODE_IDLE || maintenance_busy()) result(type, ESP_ERR_INVALID_STATE);
+        else result(type, wifi_update_start(p, n, prepare_home_wifi, restore_ldn_wifi));
+        break;
     case CMD_RELEASE:
         if (atomic_load(&s_mode) != MODE_IDLE) { result(type, ESP_ERR_INVALID_STATE); break; }
         result(type, ESP_OK);
@@ -607,6 +649,7 @@ void app_main(void)
         r = nvs_flash_init();
     }
     startup_check(r, "nvs init");
+    startup_check(esp_netif_init(), "network stack");
     startup_check(esp_event_loop_create_default(), "event loop");
     const wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     startup_check(esp_wifi_init(&init), "wifi init");

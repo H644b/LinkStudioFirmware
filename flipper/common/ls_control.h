@@ -4,6 +4,8 @@
 enum {
     LsCmdHello = 1,
     LsCmdRelease = 15,
+    LsCmdWifiUpdate = 0x18,
+    LsCmdWifiStatus = 0x19,
     LsCmdDescribe = 0x30,
     LsCmdRecipeBegin,
     LsCmdRecipeChunk,
@@ -17,6 +19,7 @@ enum {
     LsCmdPing,
     LsMsgInfo = 0x81,
     LsMsgResult = 0x82,
+    LsMsgWifiStatus = 0x8d,
     LsMsgStatus = 0xb0,
 };
 enum {
@@ -33,6 +36,9 @@ enum { LsFlagRecipe = 1, LsFlagPeer = 2, LsFlagSafeToStop = 4, LsFlagStopRequest
 /* Status v1: version, state, flags, reserved, completed trades LE32,
  * last error signed LE32, peer UTF-8 C-string[32]. No native struct on wire. */
 #define LS_STATUS_SIZE 44
+/* Wi-Fi update v1: version, stage, progress LE16 (0..1000), error LE32,
+ * release tag C-string[48], message C-string[64]. Credentials are never returned. */
+#define LS_WIFI_STATUS_SIZE 120
 static inline uint16_t ls_read16(const uint8_t* p) {
     return p[0] | (uint16_t)p[1] << 8;
 }

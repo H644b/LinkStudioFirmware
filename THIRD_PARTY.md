@@ -8,6 +8,7 @@
 | ESP-IDF | [espressif/esp-idf](https://github.com/espressif/esp-idf), `fff9895c82d744c7237be8847347bdd1b07c6643` | SDK fetched locally; its component-specific notices apply |
 | ESP USB CDC component | Retained port in `firmware/flipper-radio/components/esp_usb_cdc_rom_console/` | Original license and local-patch note included; currently inactive |
 | TinyUSB components | ESP-IDF component manager, locked by `dependencies.lock` | Fetched at build time; upstream component licenses retained locally |
+| cJSON | [espressif/cjson 1.7.19](https://components.espressif.com/components/espressif/cjson/versions/1.7.19) | MIT; pinned by the component manager; firmware releases include `cJSON-LICENSE.txt` |
 | Zstandard | [facebook/zstd v1.5.7](https://github.com/facebook/zstd/releases/tag/v1.5.7) | BSD-3-Clause; pinned and checksum-verified by `scripts/prepare-flipper-zstd.py`; decompression sources used by the standalone GPIO firmware; retain the fetched `LICENSE` in binary distributions |
 | Ryubing / LdnServer | Revisions and upstream URLs in `patches/sources.json` | Optional research patches only; source/binaries not bundled |
 | React / React DOM | Versions locked in `web/package-lock.json` | MIT; browser UI dependencies fetched by npm |

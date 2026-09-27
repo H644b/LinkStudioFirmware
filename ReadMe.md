@@ -9,7 +9,8 @@ they do not install firmware automatically while trading.
 ## Supported hardware
 
 The official **Flipper Wi-Fi Developer Board V1**, ESP32-S2-WROVER, 4 MB flash.
-The USB/MIDI release supports desktop/browser CDC and direct iPhone USB MIDI.
+The release supports desktop/browser CDC, direct iPhone USB MIDI, and GPIO UART
+for the Flipper app.
 It is not Flipper Zero system firmware and does not target ESP32-C3/S3 boards.
 The independent Flipper GPIO trading engine is still under development; no stable
 release claims standalone trading support yet.
@@ -39,10 +40,30 @@ Maintenance and errors take priority. ROM bootloader flashing cannot use these
 patterns because Link Studio firmware is not running then. A completed-trade LED
 does not independently prove persistence after restarting the game.
 
+## Updating from a Flipper Zero
+
+Install this firmware once over desktop USB, then use **Update board via Wi-Fi**
+in the Link Studio Flipper app. Enter the name of a 2.4 GHz home Wi-Fi network and
+its WPA2 password (8–63 ASCII characters), or leave the password blank for an open
+network. WPA3-only and captive-portal networks are not supported. Credentials stay
+in RAM and are erased after the attempt; the app does not save them on the SD card.
+The standard Flipper text-entry widget shows characters while entering them.
+
+The board obtains an IP address and synchronizes time before HTTPS certificate
+validation. It reads this repository's latest release metadata, verifies the manifest
+and application SHA-256 hashes, and writes only the inactive OTA partition. Progress
+appears on the Flipper. Keep the board powered until it restarts. The current running
+slot remains usable after a failed download. Boot rollback stays enabled until the
+new build reaches USB and Wi-Fi startup. Updates are refused during a trade or another
+firmware write. Wi-Fi is disconnected and the normal radio mode restored on failure.
+
+The Flipper updater requires `uart-v1` and `wifi-update-v1` capabilities; installing a
+new release does not enable the unfinished standalone trading engine.
+
 ## Build and release
 
 Every push to `main` runs `.github/workflows/release.yml`. The workflow tests the
-LED patterns, installs pinned ESP-IDF commit
+LED patterns and the release-validation contract, installs pinned ESP-IDF commit
 `fff9895c82d744c7237be8847347bdd1b07c6643`, compiles the ESP32-S2 firmware and uploads
 all assets to a draft release. Only after every upload succeeds does it publish
 the release as latest. The workflow can also be run manually in Actions.

@@ -47,13 +47,16 @@ jobs:
           tag="fw-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:8}"
           echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
           idf.py -C firmware/flipper-radio -B "$GITHUB_WORKSPACE/.build/radio" -D LINK_STUDIO_BUILD_ID="$tag" build
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main -I firmware/flipper-radio/managed_components/espressif__cjson/cJSON ci/test-update-contract.c firmware/flipper-radio/main/update_contract.c firmware/flipper-radio/managed_components/espressif__cjson/cJSON/cJSON.c -lm -o .build/test-update-contract
+          .build/test-update-contract
           python ci/package.py --build .build/radio --output .build/release --version "$tag" --source-commit "$GITHUB_SHA"
+          cp firmware/flipper-radio/managed_components/espressif__cjson/cJSON/LICENSE .build/release/cJSON-LICENSE.txt
           cp LICENSE .build/release/LICENSE.txt
           cp THIRD_PARTY.md .build/release/THIRD_PARTY.md
           cat > .build/release-notes.md <<'EOF'
           ESP32-S2 firmware for the official Flipper Wi-Fi Developer Board.
 
-          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
+          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery, GPIO UART, home Wi-Fi updates initiated by the Flipper and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
 
           Built and tested in CI from the tagged source with pinned ESP-IDF. This exact image has not been marked as physically verified. The standalone Flipper trading engine remains under development and is not advertised by this USB/MIDI release.
 

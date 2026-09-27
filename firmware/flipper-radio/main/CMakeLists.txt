@@ -1,7 +1,7 @@
-set(radio_sources "radio.c" "wire.c" "midi_codec.c" "maintenance.c" "indicator.c" "indicator_pattern.c")
+set(radio_sources "radio.c" "wire.c" "midi_codec.c" "maintenance.c" "indicator.c" "indicator_pattern.c" "wifi_update.c" "update_contract.c")
 # IDF's early requirements pass does not inherit arbitrary -D project options.
-# Keep the dependency unconditional; unused UART code is linker-collected in USB builds.
-set(radio_private esp_wifi wpa_supplicant esp_timer nvs_flash esp_event app_update spi_flash mbedtls esp_driver_uart esp_driver_ledc)
+# The release supports USB CDC, USB MIDI and the Flipper GPIO UART.
+set(radio_private esp_wifi wpa_supplicant esp_timer nvs_flash esp_event app_update spi_flash mbedtls esp_driver_uart esp_driver_ledc esp_http_client esp_netif espressif__cjson)
 if(LINK_STUDIO_GPIO)
     get_filename_component(ls_common "${CMAKE_CURRENT_LIST_DIR}/../../../flipper/common" ABSOLUTE)
     if(NOT EXISTS "${LINK_STUDIO_ZSTD}/lib/zstd.h")
@@ -19,6 +19,7 @@ if(LINK_STUDIO_GPIO)
 endif()
 idf_component_register(SRCS ${radio_sources} INCLUDE_DIRS "." "../standalone"
     PRIV_REQUIRES ${radio_private})
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LS_GPIO=1)
 if(LINK_STUDIO_BUILD_ID)
     if(NOT LINK_STUDIO_BUILD_ID MATCHES "^[A-Za-z0-9._-]+$")
         message(FATAL_ERROR "Invalid firmware build identifier")
@@ -27,5 +28,5 @@ if(LINK_STUDIO_BUILD_ID)
 endif()
 if(LINK_STUDIO_GPIO)
     target_include_directories(${COMPONENT_LIB} PRIVATE "${ls_common}" "${ls_zstd}")
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE LS_GPIO=1 ZSTD_DISABLE_ASM ZSTD_LEGACY_SUPPORT=0)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ZSTD_DISABLE_ASM ZSTD_LEGACY_SUPPORT=0)
 endif()
