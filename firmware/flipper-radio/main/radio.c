@@ -26,6 +26,7 @@
 #include "maintenance.h"
 #include "indicator.h"
 #include "wifi_update.h"
+#include "wifi_callbacks.h"
 #include "esp_netif.h"
 
 #ifndef LS_BUILD_ID
@@ -39,6 +40,8 @@ enum {
     CMD_AP_START = 0x06, CMD_AP_KICK = 0x07, CMD_ETH_TX = 0x08, CMD_RAW_TX = 0x09,
     CMD_SNIFF = 0x0A, CMD_STATUS = 0x0B, CMD_BENCH = 0x0C, CMD_TX_PACING = 0x0D,
     CMD_BOOTLOADER = 0x0E, CMD_RELEASE = 0x0F, CMD_LED_STATE = 0x17, CMD_WIFI_UPDATE = 0x18, CMD_WIFI_STATUS = 0x19,
+    CMD_WIFI_SCAN = 0x1A, CMD_WIFI_NETWORKS = 0x1B, CMD_WIFI_SAVED = 0x1C,
+    CMD_WIFI_FORGET = 0x1D, CMD_WIFI_REMEMBER = 0x1E,
 };
 enum {
     MSG_INFO = 0x81, MSG_RESULT = 0x82, MSG_RX_MGMT = 0x84, MSG_RX_ETH = 0x85, MSG_LINK = 0x86,
@@ -72,7 +75,7 @@ static atomic_uint s_tx_eth_max_us, s_tx_eth_total_us, s_tx_eth_slow;
 static QueueHandle_t s_ap_joins;   /* station MACs whose association response went out */
 static int s_ap_pairwise;
 static int (*s_stock_sta_connect)(uint8_t *bssid);
-static struct wpa_funcs *s_stock_wpa, *s_ldn_wpa;
+static WifiCallbacks s_wpa_tables;
 static bool (*s_stock_ap_join)(priv_join_param_t *join);
 
 static void result(uint8_t command, int32_t code)
@@ -212,13 +215,18 @@ static uint8_t *ldn_ap_get_wpa_ie(size_t *length)
     return s_rsn_ie;
 }
 
+static int register_wpa_table(void *table) { return esp_wifi_register_wpa_cb_internal(table); }
+static esp_err_t activate_wpa(bool local)
+{
+    struct wpa_funcs *table = wifi_callbacks_activate(&s_wpa_tables, local, register_wpa_table);
+    if (!table) return ESP_ERR_NO_MEM;
+    wpa_cb = table;
+    return ESP_OK;
+}
 static void install_hooks(void)
 {
-    struct wpa_funcs *table = malloc(sizeof(*table));
-    ESP_ERROR_CHECK(table ? ESP_OK : ESP_ERR_NO_MEM);
-    s_stock_wpa = wpa_cb;
-    s_ldn_wpa = table;
-    memcpy(table, wpa_cb, sizeof(*table));
+    ESP_ERROR_CHECK(wifi_callbacks_init(&s_wpa_tables, wpa_cb, sizeof(*wpa_cb)) ? ESP_OK : ESP_ERR_NO_MEM);
+    struct wpa_funcs *table = s_wpa_tables.local;
     s_stock_sta_connect = table->wpa_sta_connect;
     s_stock_ap_join = table->wpa_ap_join;
     table->wpa_sta_connect = ldn_sta_connect;
@@ -228,8 +236,7 @@ static void install_hooks(void)
     table->wpa_ap_join = ldn_ap_join;
     table->wpa_ap_rx_eapol = ldn_ap_rx_eapol;
     table->wpa_ap_get_wpa_ie = ldn_ap_get_wpa_ie;
-    ESP_ERROR_CHECK(esp_wifi_register_wpa_cb_internal(table));
-    wpa_cb = table;
+    ESP_ERROR_CHECK(activate_wpa(true));
 }
 
 /* ---- modes ---- */
@@ -257,8 +264,7 @@ static esp_err_t prepare_home_wifi(void)
     esp_wifi_stop();
     esp_wifi_internal_reg_rxcb(WIFI_IF_STA, NULL);
     esp_wifi_internal_reg_rxcb(WIFI_IF_AP, NULL);
-    esp_err_t r = esp_wifi_register_wpa_cb_internal(s_stock_wpa);
-    if (r == ESP_OK) wpa_cb = s_stock_wpa;
+    esp_err_t r = activate_wpa(false);
     if (r == ESP_OK) r = esp_wifi_set_mode(WIFI_MODE_STA);
     uint8_t mac[6];
     if (r == ESP_OK) r = esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -267,8 +273,14 @@ static esp_err_t prepare_home_wifi(void)
 }
 static void restore_ldn_wifi(void)
 {
-    esp_wifi_register_wpa_cb_internal(s_ldn_wpa);
-    wpa_cb = s_ldn_wpa;
+    esp_err_t r = activate_wpa(true);
+    if (r != ESP_OK) {
+        /* Keep the driver stopped if restoration cannot allocate a fresh table. */
+        wire_log("LDN callback restore failed: %s", esp_err_to_name(r));
+        indicator_error();
+        atomic_store(&s_wifi_ready, false);
+        return;
+    }
     go_idle();
 }
 
@@ -489,7 +501,7 @@ static void send_info(void)
     if (esp_wifi_get_mac(WIFI_IF_STA, head + 1) != ESP_OK) esp_read_mac(head + 1, ESP_MAC_WIFI_STA);
     esp_read_mac(head + 7, ESP_MAC_WIFI_SOFTAP);
     head[13] = (uint8_t)(chip.revision / 100);
-    const char *text = "pokeldn-radio " CONFIG_IDF_TARGET " tinyusb usbpace-v1 midi-v1 bootcmd-v1 ota-v1 led-v1 wifi-update-v1 build=" LS_BUILD_ID " "
+    const char *text = "pokeldn-radio " CONFIG_IDF_TARGET " tinyusb usbpace-v1 midi-v1 bootcmd-v1 ota-v1 led-v1 wifi-update-v1 wifi-profiles-v1 build=" LS_BUILD_ID " "
 #ifdef LS_GPIO
         "uart-v1 "
 #endif
@@ -501,6 +513,10 @@ static void command(uint8_t type, const uint8_t *p, size_t n)
 {
     if (type == CMD_WIFI_STATUS) {
         if (n) result(type, ESP_ERR_INVALID_SIZE); else wifi_update_status();
+        return;
+    }
+    if (type == CMD_WIFI_NETWORKS) {
+        if (n) result(type, ESP_ERR_INVALID_SIZE); else wifi_update_networks();
         return;
     }
     if (wifi_update_busy() && type != CMD_HELLO && type != CMD_STATUS) {
@@ -528,8 +544,21 @@ static void command(uint8_t type, const uint8_t *p, size_t n)
         if (n != 1 || p[0] < LED_IDLE || p[0] > LED_COMPLETE) { result(type, ESP_ERR_INVALID_ARG); break; }
         indicator_host((LedState)p[0]); result(type, ESP_OK); break;
     case CMD_WIFI_UPDATE:
+    case CMD_WIFI_REMEMBER:
         if (atomic_load(&s_mode) != MODE_IDLE || maintenance_busy()) result(type, ESP_ERR_INVALID_STATE);
-        else result(type, wifi_update_start(p, n, prepare_home_wifi, restore_ldn_wifi));
+        else result(type, wifi_update_start(p, n, prepare_home_wifi, restore_ldn_wifi, type == CMD_WIFI_REMEMBER));
+        break;
+    case CMD_WIFI_SCAN:
+        if (atomic_load(&s_mode) != MODE_IDLE || maintenance_busy()) result(type, ESP_ERR_INVALID_STATE);
+        else if (n) result(type, ESP_ERR_INVALID_SIZE);
+        else result(type, wifi_update_scan(prepare_home_wifi, restore_ldn_wifi));
+        break;
+    case CMD_WIFI_SAVED:
+    case CMD_WIFI_FORGET:
+        if (atomic_load(&s_mode) != MODE_IDLE || maintenance_busy()) result(type, ESP_ERR_INVALID_STATE);
+        else if (n != 1) result(type, ESP_ERR_INVALID_SIZE);
+        else if (type == CMD_WIFI_FORGET) result(type, wifi_update_forget(p[0]));
+        else result(type, wifi_update_saved(p[0], prepare_home_wifi, restore_ldn_wifi));
         break;
     case CMD_RELEASE:
         if (atomic_load(&s_mode) != MODE_IDLE) { result(type, ESP_ERR_INVALID_STATE); break; }
@@ -642,7 +671,7 @@ void app_main(void)
     const bool led_ready = indicator_init();
     wire_start(command);
     if (!led_ready) wire_log("status LED unavailable; radio remains usable");
-    wire_log("startup USB ready; heap=%u", (unsigned)esp_get_free_heap_size());
+    wire_log("startup USB ready; reset=%u heap=%u", (unsigned)esp_reset_reason(), (unsigned)esp_get_free_heap_size());
     esp_err_t r = nvs_flash_init();
     if (r == ESP_ERR_NVS_NO_FREE_PAGES || r == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         startup_check(nvs_flash_erase(), "nvs erase");

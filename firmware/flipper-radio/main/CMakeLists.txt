@@ -1,4 +1,4 @@
-set(radio_sources "radio.c" "wire.c" "midi_codec.c" "maintenance.c" "indicator.c" "indicator_pattern.c" "wifi_update.c" "update_contract.c")
+set(radio_sources "radio.c" "wire.c" "midi_codec.c" "maintenance.c" "indicator.c" "indicator_pattern.c" "wifi_update.c" "update_contract.c" "wifi_profiles.c" "wifi_callbacks.c")
 # IDF's early requirements pass does not inherit arbitrary -D project options.
 # The release supports USB CDC, USB MIDI and the Flipper GPIO UART.
 set(radio_private esp_wifi wpa_supplicant esp_timer nvs_flash esp_event app_update spi_flash mbedtls esp_driver_uart esp_driver_ledc esp_http_client esp_netif espressif__cjson)

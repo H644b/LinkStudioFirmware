@@ -6,6 +6,11 @@ enum {
     LsCmdRelease = 15,
     LsCmdWifiUpdate = 0x18,
     LsCmdWifiStatus = 0x19,
+    LsCmdWifiScan = 0x1a,
+    LsCmdWifiNetworks = 0x1b,
+    LsCmdWifiSaved = 0x1c,
+    LsCmdWifiForget = 0x1d,
+    LsCmdWifiRemember = 0x1e,
     LsCmdDescribe = 0x30,
     LsCmdRecipeBegin,
     LsCmdRecipeChunk,
@@ -20,6 +25,7 @@ enum {
     LsMsgInfo = 0x81,
     LsMsgResult = 0x82,
     LsMsgWifiStatus = 0x8d,
+    LsMsgWifiNetworks = 0x8e,
     LsMsgStatus = 0xb0,
 };
 enum {

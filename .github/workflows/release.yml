@@ -25,6 +25,10 @@ jobs:
           mkdir -p .build
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main ci/test-indicator.c firmware/flipper-radio/main/indicator_pattern.c -o .build/test-indicator
           .build/test-indicator
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main -I flipper/common ci/test-wifi-profiles.c firmware/flipper-radio/main/wifi_profiles.c flipper/common/ls_networks.c flipper/common/ls_actions.c -o .build/test-wifi-profiles
+          .build/test-wifi-profiles
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/flipper-radio/main ci/test-wifi-callbacks.c firmware/flipper-radio/main/wifi_callbacks.c -o .build/test-wifi-callbacks
+          .build/test-wifi-callbacks
       - uses: actions/checkout@v4
         with:
           repository: espressif/esp-idf
@@ -56,7 +60,7 @@ jobs:
           cat > .build/release-notes.md <<'EOF'
           ESP32-S2 firmware for the official Flipper Wi-Fi Developer Board.
 
-          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery, GPIO UART, home Wi-Fi updates initiated by the Flipper and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
+          Includes desktop/browser USB CDC, iPhone USB MIDI, application-slot updates, software recovery, GPIO UART, nearby Wi-Fi scanning, up to eight saved networks on the board, home Wi-Fi updates initiated by the Flipper and action-specific RGB status patterns. Link Studio apps fetch firmware.bundle.json from this release and verify its image sizes, target, layout and SHA-256 checksums before writing.
 
           Built and tested in CI from the tagged source with pinned ESP-IDF. This exact image has not been marked as physically verified. The standalone Flipper trading engine remains under development and is not advertised by this USB/MIDI release.
 

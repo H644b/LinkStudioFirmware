@@ -25,7 +25,7 @@ def package(build, output, version, source_commit):
     manifest=dict(schema_version=1,repository='H644b/LinkStudioFirmware',version=version,
         target='esp32s2',board='Flipper Wi-Fi Developer Board',variant='usb-midi',layout='ota-v1',
         flash_bytes=0x400000,idf_commit='fff9895c82d744c7237be8847347bdd1b07c6643',
-        source_commit=source_commit,capabilities=['usbpace-v1','midi-v1','bootcmd-v1','ota-v1','led-v1','uart-v1','wifi-update-v1'],
+        source_commit=source_commit,capabilities=['usbpace-v1','midi-v1','bootcmd-v1','ota-v1','led-v1','uart-v1','wifi-update-v1','wifi-profiles-v1'],
         source_hardware_verified=False,images=images)
     (output/'firmware.json').write_text(json.dumps(manifest,indent=2)+'\n')
     # One immutable asset avoids mismatched manifests/images and keeps browser

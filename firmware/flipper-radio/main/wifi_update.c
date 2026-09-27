@@ -1,6 +1,7 @@
 /* Home Wi-Fi is used only while idle. The running OTA slot is never overwritten. */
 #include "wifi_update.h"
 #include "update_contract.h"
+#include "wifi_profiles.h"
 #include "indicator.h"
 #include "wire.h"
 #include "esp_crt_bundle.h"
@@ -13,10 +14,12 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "psa/crypto.h"
+#include "nvs.h"
 #include <inttypes.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -33,23 +36,179 @@
 static atomic_bool busy;
 static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t status_bytes[120] = {1};
+#define SCAN_MAX 16
+/* Network list v1: 8-byte header, then 36-byte records. Credentials never leave NVS. */
+static uint8_t scan_entries[SCAN_MAX][36];
+static uint8_t scan_count, scan_state;
+static esp_err_t scan_error;
 enum { UpdateIdle, UpdateConnecting, UpdateChecking, UpdateDownloading, UpdateVerifying, UpdateRestart, UpdateError };
 typedef struct {
     wifi_config_t wifi;
     esp_err_t (*prepare)(void);
     void (*restore)(void);
+    bool remember;
+    WifiProfile profile;
 } Job;
 static void erase(void *data, size_t size) {
     volatile uint8_t *p = data;
     while (size--) *p++ = 0;
 }
+static esp_err_t profiles_load(WifiProfiles *profiles) {
+    memset(profiles, 0, sizeof(*profiles));
+    nvs_handle_t handle;
+    esp_err_t r = nvs_open("ls_wifi", NVS_READONLY, &handle);
+    if (r == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (r != ESP_OK) return r;
+    size_t size = sizeof(*profiles);
+    r = nvs_get_blob(handle, "profiles_v1", profiles, &size);
+    nvs_close(handle);
+    if (r == ESP_ERR_NVS_NOT_FOUND) { memset(profiles, 0, sizeof(*profiles)); return ESP_OK; }
+    if (r != ESP_OK || size != sizeof(*profiles) || !wifi_profiles_valid(profiles)) {
+        erase(profiles, sizeof(*profiles));
+        return r != ESP_OK ? r : ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
+static esp_err_t profiles_store(const WifiProfiles *profiles) {
+    nvs_handle_t handle;
+    esp_err_t r = nvs_open("ls_wifi", NVS_READWRITE, &handle);
+    if (r != ESP_OK) return r;
+    r = nvs_set_blob(handle, "profiles_v1", profiles, sizeof(*profiles));
+    if (r == ESP_OK) r = nvs_commit(handle);
+    nvs_close(handle);
+    return r;
+}
+static esp_err_t remember_profile(const WifiProfile *profile) {
+    WifiProfiles profiles;
+    esp_err_t r = profiles_load(&profiles);
+    if (r == ESP_OK && wifi_profiles_put(&profiles, profile->ssid, profile->password) < 0)
+        r = ESP_ERR_NO_MEM;
+    if (r == ESP_OK) r = profiles_store(&profiles);
+    erase(&profiles, sizeof(profiles));
+    return r;
+}
+esp_err_t wifi_update_forget(uint8_t slot) {
+    if (wifi_update_busy()) return ESP_ERR_INVALID_STATE;
+    if (!slot || slot > WIFI_PROFILE_MAX) return ESP_ERR_INVALID_ARG;
+    WifiProfiles profiles;
+    esp_err_t r = profiles_load(&profiles);
+    if (r == ESP_OK) {
+        wifi_profiles_forget(&profiles, slot - 1);
+        r = profiles_store(&profiles);
+    }
+    erase(&profiles, sizeof(profiles));
+    return r;
+}
+void wifi_update_networks(void) {
+    uint8_t payload[8 + (WIFI_PROFILE_MAX + SCAN_MAX) * 36] = {1};
+    WifiProfiles profiles;
+    esp_err_t r = profiles_load(&profiles);
+    uint8_t count = 0;
+    if (r == ESP_OK) for (unsigned i = 0; i < WIFI_PROFILE_MAX; ++i) {
+        WifiProfile *p = &profiles.entries[i];
+        if (!p->ssid[0]) continue;
+        uint8_t *entry = payload + 8 + count++ * 36;
+        memcpy(entry, p->ssid, 33);
+        entry[33] = (uint8_t)-127; /* saved but not detected */
+        entry[34] = p->password[0] ? 1 : 0;
+        entry[35] = i + 1;
+    }
+    erase(&profiles, sizeof(profiles));
+    portENTER_CRITICAL(&status_lock);
+    payload[1] = scan_state;
+    if (r == ESP_OK) r = scan_error;
+    for (unsigned i = 0; i < scan_count; ++i) {
+        uint8_t *entry = NULL;
+        for (unsigned j = 0; j < count; ++j) {
+            uint8_t *candidate = payload + 8 + j * 36;
+            if (!strcmp((char *)candidate, (char *)scan_entries[i]) && candidate[34] == scan_entries[i][34]) {
+                entry = candidate; break;
+            }
+        }
+        if (entry) entry[33] = scan_entries[i][33];
+        else memcpy(payload + 8 + count++ * 36, scan_entries[i], 36);
+    }
+    portEXIT_CRITICAL(&status_lock);
+    payload[2] = count;
+    if (r != ESP_OK) payload[1] = 2;
+    memcpy(payload + 4, &r, 4);
+    wire_send(0x8e, payload, 8 + count * 36, NULL, 0);
+}
+static void scanner(void *arg) {
+    Job *job = arg;
+    esp_err_t r = job->prepare();
+    wifi_ap_record_t *records = calloc(SCAN_MAX, sizeof(*records));
+    if (r == ESP_OK && !records) r = ESP_ERR_NO_MEM;
+    if (r == ESP_OK) r = esp_wifi_start();
+    wifi_scan_config_t config = {.show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE};
+    if (r == ESP_OK) r = esp_wifi_scan_start(&config, true);
+    uint16_t count = SCAN_MAX;
+    if (r == ESP_OK) r = esp_wifi_scan_get_ap_records(&count, records);
+    if (r != ESP_OK) esp_wifi_clear_ap_list();
+    portENTER_CRITICAL(&status_lock);
+    scan_count = 0;
+    if (r == ESP_OK) for (unsigned i = 0; i < count; ++i) {
+        wifi_ap_record_t *record = records + i;
+        if (!record->ssid[0]) continue;
+        uint8_t security = record->authmode == WIFI_AUTH_OPEN ? 0 :
+            (record->authmode == WIFI_AUTH_WPA2_PSK || record->authmode == WIFI_AUTH_WPA_WPA2_PSK ||
+             record->authmode == WIFI_AUTH_WPA2_WPA3_PSK) ? 1 : 2;
+        bool duplicate = false;
+        for (unsigned j = 0; j < scan_count; ++j)
+            if (!strncmp((char *)scan_entries[j], (char *)record->ssid, 32) && scan_entries[j][34] == security)
+                duplicate = true;
+        if (duplicate) continue;
+        uint8_t *entry = scan_entries[scan_count++];
+        memset(entry, 0, 36);
+        memcpy(entry, record->ssid, 32);
+        entry[33] = (uint8_t)record->rssi;
+        entry[34] = security;
+    }
+    portEXIT_CRITICAL(&status_lock);
+    free(records);
+    esp_wifi_stop();
+    job->restore();
+    erase(job, sizeof(*job)); free(job);
+    portENTER_CRITICAL(&status_lock);
+    scan_error = r;
+    scan_state = r == ESP_OK ? 0 : 2;
+    portEXIT_CRITICAL(&status_lock);
+    indicator_operation(LED_IDLE);
+    atomic_store(&busy, false);
+    wifi_update_networks();
+    vTaskDelete(NULL);
+}
+esp_err_t wifi_update_scan(esp_err_t (*prepare)(void), void (*restore)(void)) {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&busy, &expected, true)) return ESP_ERR_INVALID_STATE;
+    Job *job = calloc(1, sizeof(*job));
+    if (!job) { atomic_store(&busy, false); return ESP_ERR_NO_MEM; }
+    job->prepare = prepare; job->restore = restore;
+    portENTER_CRITICAL(&status_lock);
+    scan_state = 1; scan_error = ESP_OK;
+    portEXIT_CRITICAL(&status_lock);
+    indicator_operation(LED_SEARCHING);
+    if (xTaskCreate(scanner, "wifi-scan", 6144, job, 4, NULL) != pdPASS) {
+        free(job); atomic_store(&busy, false);
+        portENTER_CRITICAL(&status_lock);
+        scan_state = 2; scan_error = ESP_ERR_NO_MEM;
+        portEXIT_CRITICAL(&status_lock);
+        indicator_operation(LED_IDLE);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
 static void status(uint8_t state, uint16_t progress, esp_err_t error, const char *message) {
     portENTER_CRITICAL(&status_lock);
+    uint8_t previous = status_bytes[1];
     status_bytes[1] = state;
     memcpy(status_bytes + 2, &progress, 2);
     memcpy(status_bytes + 4, &error, 4);
     snprintf((char *)status_bytes + 56, 64, "%s", message);
     portEXIT_CRITICAL(&status_lock);
+    if (previous != state)
+        wire_log("wifi update stage=%u error=%s internal=%u", state, esp_err_to_name(error),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 }
 bool wifi_update_busy(void) { return atomic_load(&busy); }
 void wifi_update_status(void) {
@@ -155,9 +314,11 @@ static void updater(void *arg) {
     UpdateRelease release = {0};
     char url[160]; size_t received = 0;
     const char *failure = "Wi-Fi setup failed";
+    wire_log("wifi update: restore stock driver");
     esp_err_t r = job->prepare();
     prepared = true;
     if (r != ESP_OK) goto done;
+    wire_log("wifi update: create station interface");
     netif = esp_netif_create_default_wifi_sta();
     events = xEventGroupCreate();
     if (!netif || !events) { r = ESP_ERR_NO_MEM; goto done; }
@@ -166,12 +327,19 @@ static void updater(void *arg) {
     r = esp_wifi_set_config(WIFI_IF_STA, &job->wifi);
     erase(&job->wifi, sizeof(job->wifi));
     if (r != ESP_OK) goto done;
+    wire_log("wifi update: start station");
     r = esp_wifi_start();
     if (r == ESP_OK) r = esp_wifi_set_ps(WIFI_PS_NONE);
     if (r == ESP_OK) r = esp_wifi_connect();
     failure = "Wi-Fi connection failed";
     if (r != ESP_OK) goto done;
     if (!(xEventGroupWaitBits(events, 1, false, true, pdMS_TO_TICKS(30000)) & 1)) { r = ESP_ERR_TIMEOUT; goto done; }
+    if (job->remember) {
+        failure = "Could not save Wi-Fi network";
+        r = remember_profile(&job->profile);
+        erase(&job->profile, sizeof(job->profile));
+        if (r != ESP_OK) goto done;
+    }
     status(UpdateChecking, 0, ESP_OK, "Setting secure clock");
     esp_sntp_config_t clock_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("time.cloudflare.com");
     r = esp_netif_sntp_init(&clock_config);
@@ -226,6 +394,7 @@ static void updater(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 done:
+    wire_log("wifi update finish error=%s stage=%s", esp_err_to_name(r), failure);
     if (ota_open) esp_ota_abort(ota);
     free(json);
     if (clock_started) esp_netif_sntp_deinit();
@@ -244,17 +413,32 @@ done:
     vTaskDelete(NULL);
 }
 esp_err_t wifi_update_start(const uint8_t *payload, size_t size,
-                            esp_err_t (*prepare)(void), void (*restore)(void)) {
+                            esp_err_t (*prepare)(void), void (*restore)(void), bool remember) {
     if (!update_credentials_valid(payload, size)) return ESP_ERR_INVALID_ARG;
     bool expected = false;
     if (!atomic_compare_exchange_strong(&busy, &expected, true)) return ESP_ERR_INVALID_STATE;
     Job *job = calloc(1, sizeof(*job));
     if (!job) { atomic_store(&busy, false); return ESP_ERR_NO_MEM; }
     job->prepare = prepare; job->restore = restore;
+    job->remember = remember;
     memcpy(job->wifi.sta.ssid, payload + 2, payload[0]);
     memcpy(job->wifi.sta.password, payload + 2 + payload[0], payload[1]);
     job->wifi.sta.threshold.authmode = payload[1] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     job->wifi.sta.pmf_cfg.capable = true;
+    if (remember) {
+        memcpy(job->profile.ssid, payload + 2, payload[0]);
+        memcpy(job->profile.password, payload + 2 + payload[0], payload[1]);
+        WifiProfiles profiles;
+        esp_err_t r = profiles_load(&profiles);
+        if (r == ESP_OK && wifi_profiles_put(&profiles, job->profile.ssid, job->profile.password) < 0)
+            r = ESP_ERR_NO_MEM;
+        erase(&profiles, sizeof(profiles));
+        if (r != ESP_OK) {
+            erase(job, sizeof(*job)); free(job); atomic_store(&busy, false);
+            status(UpdateError, 0, r, "Saved list full; forget a network");
+            return r;
+        }
+    }
     portENTER_CRITICAL(&status_lock);
     memset(status_bytes, 0, sizeof(status_bytes)); status_bytes[0] = 1;
     portEXIT_CRITICAL(&status_lock);
@@ -266,4 +450,20 @@ esp_err_t wifi_update_start(const uint8_t *payload, size_t size,
         indicator_operation(LED_IDLE); return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+esp_err_t wifi_update_saved(uint8_t slot, esp_err_t (*prepare)(void), void (*restore)(void)) {
+    if (!slot || slot > WIFI_PROFILE_MAX) return ESP_ERR_INVALID_ARG;
+    if (wifi_update_busy()) return ESP_ERR_INVALID_STATE;
+    WifiProfiles profiles;
+    esp_err_t r = profiles_load(&profiles);
+    uint8_t payload[97] = {0};
+    if (r == ESP_OK) {
+        const WifiProfile *profile = &profiles.entries[slot - 1];
+        payload[0] = strlen(profile->ssid); payload[1] = strlen(profile->password);
+        memcpy(payload + 2, profile->ssid, payload[0]);
+        memcpy(payload + 2 + payload[0], profile->password, payload[1]);
+        r = wifi_update_start(payload, 2 + payload[0] + payload[1], prepare, restore, false);
+    }
+    erase(payload, sizeof(payload)); erase(&profiles, sizeof(profiles));
+    return r;
 }

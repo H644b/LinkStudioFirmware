@@ -42,12 +42,18 @@ does not independently prove persistence after restarting the game.
 
 ## Updating from a Flipper Zero
 
-Install this firmware once over desktop USB, then use **Update board via Wi-Fi**
-in the Link Studio Flipper app. Enter the name of a 2.4 GHz home Wi-Fi network and
-its WPA2 password (8–63 ASCII characters), or leave the password blank for an open
-network. WPA3-only and captive-portal networks are not supported. Credentials stay
-in RAM and are erased after the attempt; the app does not save them on the SD card.
-The standard Flipper text-entry widget shows characters while entering them.
+Install this firmware once over desktop USB, then open **Wi-Fi and updates →
+Choose nearby network** in the Link Studio Flipper app. The board scans 2.4 GHz
+networks. Select yours and enter its WPA2 password (8–63 ASCII characters); open
+networks skip password entry. WPA3-only and captive-portal networks are not supported.
+Use the keyboard's Save key to start the connection and update check.
+
+After successful connection and DHCP, up to eight networks are saved in the board's
+NVS flash. **Saved networks** lets you reconnect, replace a password or forget a
+network. Passwords are not returned in network lists, written to Flipper SD or included
+in releases. They are stored persistently on the board without flash encryption;
+temporary copies are cleared after use. The Flipper keyboard displays entered characters.
+The legacy command remains temporary and does not save credentials.
 
 The board obtains an IP address and synchronizes time before HTTPS certificate
 validation. It reads this repository's latest release metadata, verifies the manifest
@@ -57,13 +63,16 @@ slot remains usable after a failed download. Boot rollback stays enabled until t
 new build reaches USB and Wi-Fi startup. Updates are refused during a trade or another
 firmware write. Wi-Fi is disconnected and the normal radio mode restored on failure.
 
-The Flipper updater requires `uart-v1` and `wifi-update-v1` capabilities; installing a
+The Flipper updater requires `uart-v1` and `wifi-update-v1`; scanning and saved networks
+also require `wifi-profiles-v1`. Older boards show a one-time manual network entry
+option to download an upgrade. Installing a
 new release does not enable the unfinished standalone trading engine.
 
 ## Build and release
 
 Every push to `main` runs `.github/workflows/release.yml`. The workflow tests the
-LED patterns and the release-validation contract, installs pinned ESP-IDF commit
+LED patterns, saved profile handling, network message parsing, action guards and the
+release-validation contract, installs pinned ESP-IDF commit
 `fff9895c82d744c7237be8847347bdd1b07c6643`, compiles the ESP32-S2 firmware and uploads
 all assets to a draft release. Only after every upload succeeds does it publish
 the release as latest. The workflow can also be run manually in Actions.
